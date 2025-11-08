@@ -1,7 +1,7 @@
 use egui::{ComboBox, Context, DragValue, Grid, Slider};
 
 use crate::audio::AudioTarget;
-use crate::sim::SimSettings;
+use crate::sim::{DEFAULT_AUDIO_BAND_RANGES, SimSettings};
 
 pub fn band_name(index: usize) -> &'static str {
     match index {
@@ -125,6 +125,37 @@ pub fn audio_window(ctx: &Context, settings: &mut SimSettings, targets: &[AudioT
             ui.add(Slider::new(&mut settings.audio.gate, 0.0..=0.2).text("Gate"));
             ui.add(Slider::new(&mut settings.audio.smoothing, 0.0..=0.99).text("Smoothing"));
             ui.separator();
+            ui.label("Frequency bands (Hz)");
+            Grid::new("audio_band_ranges")
+                .num_columns(3)
+                .striped(true)
+                .show(ui, |ui| {
+                    for idx in 0..4 {
+                        let (mut low, mut high) = settings.audio.band_ranges[idx];
+                        ui.label(band_name(idx));
+                        ui.add(
+                            DragValue::new(&mut low)
+                                .speed(5.0)
+                                .range(10.0..=24_000.0)
+                                .suffix(" Hz"),
+                        );
+                        ui.add(
+                            DragValue::new(&mut high)
+                                .speed(5.0)
+                                .range(10.0..=24_000.0)
+                                .suffix(" Hz"),
+                        );
+                        if high <= low {
+                            high = (low + 10.0).min(24_000.0);
+                        }
+                        settings.audio.band_ranges[idx] = (low, high);
+                        ui.end_row();
+                    }
+                });
+            if ui.button("Reset bands").clicked() {
+                settings.audio.band_ranges = DEFAULT_AUDIO_BAND_RANGES;
+            }
+            ui.separator();
             ui.checkbox(&mut settings.audio.modulate_strength, "Modulate strength");
             ui.add(
                 Slider::new(&mut settings.audio.strength_depth, 0.0..=50.0).text("Strength depth"),
@@ -133,5 +164,34 @@ pub fn audio_window(ctx: &Context, settings: &mut SimSettings, targets: &[AudioT
             ui.add(
                 Slider::new(&mut settings.audio.position_depth, 0.0..=100.0).text("Position depth"),
             );
+            ui.separator();
+            ui.checkbox(
+                &mut settings.audio.modulate_attractor,
+                "Modulate attractor coefficients",
+            );
+            Grid::new("attractor_audio_grid")
+                .num_columns(3)
+                .striped(true)
+                .show(ui, |ui| {
+                    for (idx, label) in ["a", "b", "c", "d"].iter().enumerate() {
+                        ui.label(format!("Coeff {label}"));
+                        ComboBox::from_id_salt(format!("attr_band_{idx}"))
+                            .selected_text(band_name(settings.audio.attractor_bands[idx]))
+                            .show_ui(ui, |ui| {
+                                for band in 0..4 {
+                                    ui.selectable_value(
+                                        &mut settings.audio.attractor_bands[idx],
+                                        band,
+                                        band_name(band),
+                                    );
+                                }
+                            });
+                        ui.add(
+                            Slider::new(&mut settings.audio.attractor_depths[idx], 0.0..=10.0)
+                                .text("Depth"),
+                        );
+                        ui.end_row();
+                    }
+                });
         });
 }

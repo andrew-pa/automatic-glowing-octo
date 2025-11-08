@@ -13,7 +13,7 @@ use pw::{
 };
 use rustfft::{Fft, FftPlanner, num_complex::Complex32};
 
-use crate::sim::{AudioSettings, GRAVITY_WELL_COUNT};
+use crate::sim::{AudioSettings, DEFAULT_AUDIO_BAND_RANGES, GRAVITY_WELL_COUNT};
 
 static PIPEWIRE_INIT: OnceLock<()> = OnceLock::new();
 
@@ -324,6 +324,15 @@ impl AudioShared {
         cfg.gain = settings.gain.clamp(0.1, 100.0);
         cfg.gate = settings.gate.clamp(0.0, 1.0);
         cfg.smoothing = settings.smoothing.clamp(0.0, 0.995);
+        for (dst, src) in cfg.band_ranges.iter_mut().zip(settings.band_ranges.iter()) {
+            let (mut low, mut high) = *src;
+            low = low.clamp(10.0, 24_000.0);
+            high = high.clamp(20.0, 24_000.0);
+            if high - low < 10.0 {
+                high = (low + 10.0).min(24_000.0);
+            }
+            *dst = (low, high);
+        }
     }
 
     fn config(&self) -> AudioRuntimeConfig {
@@ -344,6 +353,7 @@ struct AudioRuntimeConfig {
     gain: f32,
     gate: f32,
     smoothing: f32,
+    band_ranges: [(f32, f32); GRAVITY_WELL_COUNT],
 }
 
 impl Default for AudioRuntimeConfig {
@@ -352,6 +362,7 @@ impl Default for AudioRuntimeConfig {
             gain: 1.0,
             gate: 0.01,
             smoothing: 0.5,
+            band_ranges: DEFAULT_AUDIO_BAND_RANGES,
         }
     }
 }
@@ -499,20 +510,15 @@ impl AudioAnalyzer {
         }
         self.fft.process(&mut self.spectrum);
 
-        const BANDS: [(f32, f32); GRAVITY_WELL_COUNT] = [
-            (20.0, 200.0),
-            (200.0, 800.0),
-            (800.0, 3_000.0),
-            (3_000.0, 12_000.0),
-        ];
-
         let mut accum = [0.0; GRAVITY_WELL_COUNT];
+        let band_ranges = config.band_ranges;
         let norm = 1.0 / (self.fft_size as f32).powi(2);
         for i in 1..self.fft_size / 2 {
             let freq = i as f32 * (self.sample_rate as f32 / self.fft_size as f32);
             let energy = self.spectrum[i].norm_sqr() * norm;
-            for (band_idx, range) in BANDS.iter().enumerate() {
-                if freq >= range.0 && freq < range.1 {
+            for (band_idx, range) in band_ranges.iter().enumerate() {
+                let (low, high) = *range;
+                if freq >= low && freq < high {
                     accum[band_idx] += energy;
                     break;
                 }

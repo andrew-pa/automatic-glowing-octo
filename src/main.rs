@@ -184,6 +184,7 @@ struct State {
     audio_engine: AudioEngine,
     audio_bands: [f32; GRAVITY_WELL_COUNT],
     modulated_wells: [GravityWell; GRAVITY_WELL_COUNT],
+    modulated_attractor: [f32; 4],
     audio_targets: Vec<AudioTarget>,
     last_target_refresh: Instant,
     pending_reset: bool,
@@ -256,14 +257,16 @@ impl State {
 
         let settings = SimSettings::default();
         let dispatch_count = settings.dispatch_count();
-        let modulated_wells = settings.gravity_wells;
-        let sim_uniform = SimUniform::from_settings(&settings, &modulated_wells);
-        let camera_uniform = CameraUniform::new();
         let mut audio_engine = AudioEngine::new();
         audio_engine.refresh(&settings.audio);
         audio_engine.refresh_targets();
         let audio_bands = audio_engine.bands();
         let audio_targets = audio_engine.targets();
+        let modulated_wells = settings.modulated_wells(audio_bands);
+        let modulated_attractor = settings.modulated_attractor(audio_bands);
+        let sim_uniform =
+            SimUniform::from_settings(&settings, &modulated_wells, modulated_attractor);
+        let camera_uniform = CameraUniform::new();
 
         let sim_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Sim Uniform"),
@@ -489,6 +492,7 @@ impl State {
                 b: 0.017,
                 a: 1.0,
             },
+            modulated_attractor,
         })
     }
 
@@ -524,6 +528,7 @@ impl State {
         self.audio_engine.refresh(&self.settings.audio);
         self.audio_bands = self.audio_engine.bands();
         self.modulated_wells = self.settings.modulated_wells(self.audio_bands);
+        self.modulated_attractor = self.settings.modulated_attractor(self.audio_bands);
 
         let sim_dt = if self.paused {
             0.0
@@ -538,6 +543,7 @@ impl State {
             self.frame_id,
             std::mem::take(&mut self.pending_reset),
             &self.modulated_wells,
+            self.modulated_attractor,
             &self.settings,
         );
         self.queue

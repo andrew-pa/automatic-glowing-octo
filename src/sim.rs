@@ -4,6 +4,12 @@ use wgpu::BufferAddress;
 use bytemuck::{Pod, Zeroable};
 
 pub const GRAVITY_WELL_COUNT: usize = 4;
+pub const DEFAULT_AUDIO_BAND_RANGES: [(f32, f32); GRAVITY_WELL_COUNT] = [
+    (20.0, 200.0),
+    (200.0, 800.0),
+    (800.0, 3_000.0),
+    (3_000.0, 12_000.0),
+];
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -30,6 +36,7 @@ impl SimUniform {
     pub fn from_settings(
         settings: &SimSettings,
         wells: &[GravityWell; GRAVITY_WELL_COUNT],
+        attractor: [f32; 4],
     ) -> Self {
         Self {
             integrator: [
@@ -38,7 +45,7 @@ impl SimUniform {
                 settings.damping,
                 settings.color_mix,
             ],
-            attractor: settings.attractor,
+            attractor,
             misc: [settings.jitter, settings.drive, 0.0, 0.0],
             gravity: wells.map(|well| well.as_vec4()),
             counters: [0, 1, settings.particle_count, 0],
@@ -51,10 +58,11 @@ impl SimUniform {
         frame: u64,
         reset: bool,
         wells: &[GravityWell; GRAVITY_WELL_COUNT],
+        attractor: [f32; 4],
         settings: &SimSettings,
     ) {
         self.integrator = [dt, settings.flow, settings.damping, settings.color_mix];
-        self.attractor = settings.attractor;
+        self.attractor = attractor;
         self.misc = [settings.jitter, settings.drive, 0.0, 0.0];
         self.gravity = wells.map(|well| well.as_vec4());
         self.counters[0] = frame as u32;
@@ -209,8 +217,12 @@ pub struct AudioSettings {
     pub smoothing: f32,
     pub modulate_strength: bool,
     pub modulate_position: bool,
+    pub modulate_attractor: bool,
     pub strength_depth: f32,
     pub position_depth: f32,
+    pub attractor_depths: [f32; 4],
+    pub attractor_bands: [usize; 4],
+    pub band_ranges: [(f32, f32); GRAVITY_WELL_COUNT],
 }
 
 impl Default for AudioSettings {
@@ -224,8 +236,12 @@ impl Default for AudioSettings {
             smoothing: 0.6,
             modulate_strength: true,
             modulate_position: true,
+            modulate_attractor: false,
             strength_depth: 6.0,
             position_depth: 1.5,
+            attractor_depths: [0.5; 4],
+            attractor_bands: [0, 1, 2, 3],
+            band_ranges: DEFAULT_AUDIO_BAND_RANGES,
         }
     }
 }
@@ -269,5 +285,24 @@ impl SimSettings {
         }
 
         wells
+    }
+
+    pub fn modulated_attractor(&self, bands: [f32; GRAVITY_WELL_COUNT]) -> [f32; 4] {
+        if !self.audio.enabled || !self.audio.modulate_attractor {
+            return self.attractor;
+        }
+
+        let mut result = self.attractor;
+        for (idx, value) in result.iter_mut().enumerate() {
+            let band_index = self.audio.attractor_bands[idx].min(GRAVITY_WELL_COUNT - 1);
+            let signal = bands[band_index].clamp(0.0, 1.0);
+            let depth = self.audio.attractor_depths[idx].max(0.0);
+            if depth == 0.0 {
+                continue;
+            }
+            let offset = (signal * 2.0 - 1.0) * depth;
+            *value = (self.attractor[idx] + offset).clamp(-15.0, 15.0);
+        }
+        result
     }
 }
