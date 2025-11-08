@@ -56,10 +56,10 @@ pub fn gravity_window(ctx: &Context, settings: &mut SimSettings, audio_bands: [f
                                 });
                             ui.end_row();
                             ui.label("Strength mix");
-                            ui.add(Slider::new(&mut well.strength_mod, 0.0..=1.5).text("depth"));
+                            ui.add(Slider::new(&mut well.strength_mod, 0.0..=100.0).text("depth"));
                             ui.end_row();
                             ui.label("Position mix");
-                            ui.add(Slider::new(&mut well.position_mod, 0.0..=1.5).text("depth"));
+                            ui.add(Slider::new(&mut well.position_mod, 0.0..=100.0).text("depth"));
                             ui.end_row();
                         });
                 });
@@ -118,7 +118,7 @@ pub fn audio_window(ctx: &Context, settings: &mut SimSettings, targets: &[AudioT
             }
             ui.checkbox(&mut settings.audio.capture_sink, "Capture sink monitor");
             ui.add(
-                Slider::new(&mut settings.audio.gain, 0.1..=20.0)
+                Slider::new(&mut settings.audio.gain, 0.1..=1000.0)
                     .logarithmic(true)
                     .text("Gain"),
             );
@@ -127,11 +127,11 @@ pub fn audio_window(ctx: &Context, settings: &mut SimSettings, targets: &[AudioT
             ui.separator();
             ui.checkbox(&mut settings.audio.modulate_strength, "Modulate strength");
             ui.add(
-                Slider::new(&mut settings.audio.strength_depth, 0.0..=24.0).text("Strength depth"),
+                Slider::new(&mut settings.audio.strength_depth, 0.0..=50.0).text("Strength depth"),
             );
             ui.checkbox(&mut settings.audio.modulate_position, "Modulate position");
             ui.add(
-                Slider::new(&mut settings.audio.position_depth, 0.0..=10.0).text("Position depth"),
+                Slider::new(&mut settings.audio.position_depth, 0.0..=100.0).text("Position depth"),
             );
         });
 }

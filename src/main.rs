@@ -605,9 +605,9 @@ impl State {
                 ui.add(Slider::new(&mut self.settings.dt, 0.0005..=0.02).text("target dt"));
                 ui.separator();
                 ui.label("Flow Field");
-                ui.add(Slider::new(&mut self.settings.flow, 0.001..=20.0).text("flow"));
-                ui.add(Slider::new(&mut self.settings.damping, 0.0..=0.99).text("damping"));
-                ui.add(Slider::new(&mut self.settings.color_mix, 0.01..=1.0).text("color mix"));
+                ui.add(Slider::new(&mut self.settings.flow, 0.0001..=10.0).text("flow"));
+                ui.add(Slider::new(&mut self.settings.damping, 0.0..=0.999999).text("damping"));
+                ui.add(Slider::new(&mut self.settings.color_mix, 0.01..=2.0).text("color mix"));
                 ui.add(Slider::new(&mut self.settings.jitter, 0.0..=0.01).text("jitter"));
                 ui.add(Slider::new(&mut self.settings.drive, 0.0..=0.5).text("drive"));
                 CollapsingHeader::new("Attractor coefficients")
@@ -616,7 +616,7 @@ impl State {
                         let labels = ["a", "b", "c", "d"];
                         for (idx, label) in labels.iter().enumerate() {
                             ui.add(
-                                Slider::new(&mut self.settings.attractor[idx], -30.0..=30.0)
+                                Slider::new(&mut self.settings.attractor[idx], -15.0..=15.0)
                                     .text(*label),
                             );
                         }
@@ -625,17 +625,17 @@ impl State {
                 ui.label("Rendering");
                 ui.add(Slider::new(&mut self.settings.point_size, 0.1..=12.0).text("point size"));
                 ui.add(
-                    Slider::new(&mut self.settings.exposure, 0.0..=3.0)
+                    Slider::new(&mut self.settings.exposure, 0.0..=1.0)
                         .step_by(0.00001)
                         .text("exposure"),
                 );
                 ui.add(
-                    Slider::new(&mut self.settings.trail_decay, 0.5..=0.999)
+                    Slider::new(&mut self.settings.trail_decay, 0.2..=0.999)
                         .logarithmic(true)
                         .text("trail decay"),
                 );
                 ui.add(
-                    Slider::new(&mut self.settings.trail_intensity, 0.1..=5.0).text("trail gain"),
+                    Slider::new(&mut self.settings.trail_intensity, 0.01..=2.0).text("trail gain"),
                 );
             });
 
