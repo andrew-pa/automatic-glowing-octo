@@ -27,7 +27,10 @@ pub struct SimUniform {
 }
 
 impl SimUniform {
-    pub fn from_settings(settings: &SimSettings) -> Self {
+    pub fn from_settings(
+        settings: &SimSettings,
+        wells: &[GravityWell; GRAVITY_WELL_COUNT],
+    ) -> Self {
         Self {
             integrator: [
                 settings.dt,
@@ -37,16 +40,23 @@ impl SimUniform {
             ],
             attractor: settings.attractor,
             misc: [settings.jitter, settings.drive, 0.0, 0.0],
-            gravity: settings.gravity_wells.map(|well| well.as_vec4()),
+            gravity: wells.map(|well| well.as_vec4()),
             counters: [0, 1, settings.particle_count, 0],
         }
     }
 
-    pub fn update(&mut self, dt: f32, frame: u64, reset: bool, settings: &SimSettings) {
+    pub fn update(
+        &mut self,
+        dt: f32,
+        frame: u64,
+        reset: bool,
+        wells: &[GravityWell; GRAVITY_WELL_COUNT],
+        settings: &SimSettings,
+    ) {
         self.integrator = [dt, settings.flow, settings.damping, settings.color_mix];
         self.attractor = settings.attractor;
         self.misc = [settings.jitter, settings.drive, 0.0, 0.0];
-        self.gravity = settings.gravity_wells.map(|well| well.as_vec4());
+        self.gravity = wells.map(|well| well.as_vec4());
         self.counters[0] = frame as u32;
         self.counters[1] = if reset { 1 } else { 0 };
         self.counters[2] = settings.particle_count;
@@ -104,6 +114,7 @@ pub struct SimSettings {
     pub exposure: f32,
     pub trail_decay: f32,
     pub trail_intensity: f32,
+    pub audio: AudioSettings,
     pub gravity_wells: [GravityWell; GRAVITY_WELL_COUNT],
     pub time_scale: f32,
 }
@@ -134,26 +145,42 @@ impl Default for SimSettings {
             exposure: 0.4,
             trail_decay: 0.93,
             trail_intensity: 1.4,
+            audio: AudioSettings::default(),
             gravity_wells: [
-                GravityWell::new([6.0, 0.0, 0.0], 12.0),
-                GravityWell::new([-6.0, 0.0, 0.0], 12.0),
-                GravityWell::new([0.0, 6.0, 0.0], 8.0),
-                GravityWell::new([0.0, -6.0, 0.0], 8.0),
+                GravityWell::new([6.0, 0.0, 0.0], 12.0, 0, 0.6, 0.3),
+                GravityWell::new([-6.0, 0.0, 0.0], 12.0, 1, 0.6, 0.3),
+                GravityWell::new([0.0, 6.0, 0.0], 8.0, 2, 0.5, 0.4),
+                GravityWell::new([0.0, -6.0, 0.0], 8.0, 3, 0.5, 0.4),
             ],
             time_scale: 1.0,
         }
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct GravityWell {
     pub position: [f32; 3],
     pub strength: f32,
+    pub audio_band: usize,
+    pub strength_mod: f32,
+    pub position_mod: f32,
 }
 
 impl GravityWell {
-    pub const fn new(position: [f32; 3], strength: f32) -> Self {
-        Self { position, strength }
+    pub const fn new(
+        position: [f32; 3],
+        strength: f32,
+        audio_band: usize,
+        strength_mod: f32,
+        position_mod: f32,
+    ) -> Self {
+        Self {
+            position,
+            strength,
+            audio_band,
+            strength_mod,
+            position_mod,
+        }
     }
 
     pub fn as_vec4(self) -> [f32; 4] {
@@ -168,6 +195,79 @@ impl GravityWell {
 
 impl Default for GravityWell {
     fn default() -> Self {
-        Self::new([0.0; 3], 0.0)
+        Self::new([0.0; 3], 0.0, 0, 0.0, 0.0)
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub struct AudioSettings {
+    pub enabled: bool,
+    pub capture_sink: bool,
+    pub device: String,
+    pub gain: f32,
+    pub gate: f32,
+    pub smoothing: f32,
+    pub modulate_strength: bool,
+    pub modulate_position: bool,
+    pub strength_depth: f32,
+    pub position_depth: f32,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            capture_sink: false,
+            device: String::new(),
+            gain: 4.0,
+            gate: 0.02,
+            smoothing: 0.6,
+            modulate_strength: true,
+            modulate_position: true,
+            strength_depth: 6.0,
+            position_depth: 1.5,
+        }
+    }
+}
+
+impl SimSettings {
+    pub fn modulated_wells(
+        &self,
+        bands: [f32; GRAVITY_WELL_COUNT],
+    ) -> [GravityWell; GRAVITY_WELL_COUNT] {
+        let mut wells = self.gravity_wells;
+        if !self.audio.enabled {
+            return wells;
+        }
+
+        for (idx, well) in wells.iter_mut().enumerate() {
+            let base = self.gravity_wells[idx];
+            let band_index = base.audio_band.min(GRAVITY_WELL_COUNT - 1);
+            let signal = bands[band_index];
+            if self.audio.modulate_strength {
+                let depth = self.audio.strength_depth * base.strength_mod;
+                well.strength = (base.strength + depth * signal).max(0.0);
+            } else {
+                well.strength = base.strength;
+            }
+            if self.audio.modulate_position {
+                let depth = self.audio.position_depth * base.position_mod;
+                let base_pos = Vec3::from_array(base.position);
+                let axis = if base_pos.length_squared() > 1e-4 {
+                    base_pos.normalize()
+                } else {
+                    Vec3::Y
+                };
+                let new_pos = base_pos + axis * depth * signal;
+                well.position = [new_pos.x, new_pos.y, new_pos.z];
+            } else {
+                well.position = base.position;
+            }
+            well.audio_band = base.audio_band;
+            well.strength_mod = base.strength_mod;
+            well.position_mod = base.position_mod;
+        }
+
+        wells
     }
 }

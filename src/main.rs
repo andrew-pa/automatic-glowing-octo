@@ -1,19 +1,23 @@
+mod audio;
 mod camera;
 mod fx;
 mod sim;
 mod ui;
+mod ui_panels;
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as AnyhowContext, Result};
+use audio::{AudioEngine, AudioTarget};
 use camera::{OrbitCamera, OrbitController};
-use egui::Context;
+use egui::{CollapsingHeader, Context};
 use fx::{TRAIL_FORMAT, TrailComposer};
 use glam::{Vec2, Vec3};
 use log::{error, warn};
-use sim::{CameraUniform, GpuParticle, SimSettings, SimUniform};
+use sim::{CameraUniform, GRAVITY_WELL_COUNT, GpuParticle, GravityWell, SimSettings, SimUniform};
 use ui::{UiFrameOutput, UiLayer};
+use ui_panels::{audio_window, gravity_window};
 use wgpu::SurfaceError;
 use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
@@ -177,6 +181,11 @@ struct State {
     camera_controller: OrbitController,
     ui_layer: UiLayer,
     ui_output: Option<UiFrameOutput>,
+    audio_engine: AudioEngine,
+    audio_bands: [f32; GRAVITY_WELL_COUNT],
+    modulated_wells: [GravityWell; GRAVITY_WELL_COUNT],
+    audio_targets: Vec<AudioTarget>,
+    last_target_refresh: Instant,
     pending_reset: bool,
     paused: bool,
     last_frame: Instant,
@@ -247,8 +256,14 @@ impl State {
 
         let settings = SimSettings::default();
         let dispatch_count = settings.dispatch_count();
-        let sim_uniform = SimUniform::from_settings(&settings);
+        let modulated_wells = settings.gravity_wells;
+        let sim_uniform = SimUniform::from_settings(&settings, &modulated_wells);
         let camera_uniform = CameraUniform::new();
+        let mut audio_engine = AudioEngine::new();
+        audio_engine.refresh(&settings.audio);
+        audio_engine.refresh_targets();
+        let audio_bands = audio_engine.bands();
+        let audio_targets = audio_engine.targets();
 
         let sim_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Sim Uniform"),
@@ -458,6 +473,11 @@ impl State {
             camera_controller,
             ui_layer,
             ui_output: None,
+            audio_engine,
+            audio_bands,
+            modulated_wells,
+            audio_targets,
+            last_target_refresh: Instant::now(),
             pending_reset: true,
             paused: false,
             last_frame: Instant::now(),
@@ -501,6 +521,9 @@ impl State {
         self.frame_time_smooth = self.frame_time_smooth * 0.9 + frame_dt * 0.1;
 
         self.run_ui();
+        self.audio_engine.refresh(&self.settings.audio);
+        self.audio_bands = self.audio_engine.bands();
+        self.modulated_wells = self.settings.modulated_wells(self.audio_bands);
 
         let sim_dt = if self.paused {
             0.0
@@ -514,6 +537,7 @@ impl State {
             sim_dt,
             self.frame_id,
             std::mem::take(&mut self.pending_reset),
+            &self.modulated_wells,
             &self.settings,
         );
         self.queue
@@ -544,12 +568,17 @@ impl State {
         let window_ref = window.as_ref();
         let raw_input = self.ui_layer.take_input(window_ref, self.size);
         let egui_ctx = self.ui_layer.context().clone();
+        if self.last_target_refresh.elapsed() > Duration::from_secs(3) {
+            self.audio_engine.refresh_targets();
+            self.audio_targets = self.audio_engine.targets();
+            self.last_target_refresh = Instant::now();
+        }
         let full_output = egui_ctx.run(raw_input, |ctx| self.build_ui(ctx));
         self.ui_output = Some(self.ui_layer.process_output(window_ref, full_output));
     }
 
     fn build_ui(&mut self, ctx: &Context) {
-        use egui::{CollapsingHeader, DragValue, Grid, Slider, pos2};
+        use egui::{Slider, pos2};
 
         let fps = 1.0 / self.frame_time_smooth.max(1e-6);
         let dispatch_preview = self.settings.dispatch_count();
@@ -608,42 +637,10 @@ impl State {
                 ui.add(
                     Slider::new(&mut self.settings.trail_intensity, 0.1..=5.0).text("trail gain"),
                 );
-                ui.separator();
-                CollapsingHeader::new("Gravity wells")
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        for (idx, well) in self.settings.gravity_wells.iter_mut().enumerate() {
-                            ui.group(|ui| {
-                                ui.label(format!("Well {}", idx + 1));
-                                Grid::new(format!("well_grid_{idx}"))
-                                    .num_columns(2)
-                                    .striped(true)
-                                    .show(ui, |ui| {
-                                        ui.label("Position");
-                                        ui.horizontal(|ui| {
-                                            for (value, label) in
-                                                well.position.iter_mut().zip(["x", "y", "z"])
-                                            {
-                                                ui.add(
-                                                    DragValue::new(value)
-                                                        .speed(0.1)
-                                                        .range(-50.0..=50.0)
-                                                        .prefix(format!("{label}: ")),
-                                                );
-                                            }
-                                        });
-                                        ui.end_row();
-                                        ui.label("Strength");
-                                        ui.add(
-                                            Slider::new(&mut well.strength, 0.0..=50.0)
-                                                .text("strength"),
-                                        );
-                                        ui.end_row();
-                                    });
-                            });
-                        }
-                    });
             });
+
+        gravity_window(ctx, &mut self.settings, self.audio_bands);
+        audio_window(ctx, &mut self.settings, &self.audio_targets);
 
         egui::TopBottomPanel::bottom("status_panel")
             .resizable(false)
