@@ -71,42 +71,58 @@ impl ApplicationHandler for DustApp {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(state) = self.state.as_mut() else {
+        let Some(state_ref) = self.state.as_ref() else {
             return;
         };
-        if window_id != state.window_id() {
+        if window_id != state_ref.window_id() {
             return;
         }
 
-        if state
-            .camera_controller
-            .process(&mut state.camera, &event, state.size)
+        let mut should_shutdown = false;
+
         {
-            return;
-        }
+            let state = self.state.as_mut().expect("state still present");
 
-        match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => state.resize(size),
-            WindowEvent::ScaleFactorChanged { .. } => state.resize(state.window.inner_size()),
-            WindowEvent::RedrawRequested => {
-                state.update();
-                if let Err(err) = state.render() {
-                    state.handle_surface_error(err, event_loop);
-                }
+            if state
+                .camera_controller
+                .process(&mut state.camera, &event, state.size)
+            {
+                return;
             }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed && !event.repeat {
-                    match &event.logical_key {
-                        Key::Named(NamedKey::Escape) => event_loop.exit(),
-                        Key::Named(NamedKey::Space) => state.toggle_pause(),
-                        Key::Character(ch) if ch.eq_ignore_ascii_case("r") => state.queue_reset(),
-                        Key::Character(ch) if ch.eq_ignore_ascii_case("q") => event_loop.exit(),
-                        _ => {}
+
+            match event {
+                WindowEvent::CloseRequested => should_shutdown = true,
+                WindowEvent::Resized(size) => state.resize(size),
+                WindowEvent::ScaleFactorChanged { .. } => state.resize(state.window.inner_size()),
+                WindowEvent::RedrawRequested => {
+                    state.update();
+                    if let Err(err) = state.render() {
+                        if state.handle_surface_error(err) {
+                            should_shutdown = true;
+                        }
                     }
                 }
+                WindowEvent::KeyboardInput { event, .. } => {
+                    if event.state == ElementState::Pressed && !event.repeat {
+                        match &event.logical_key {
+                            Key::Named(NamedKey::Escape) => should_shutdown = true,
+                            Key::Named(NamedKey::Space) => state.toggle_pause(),
+                            Key::Character(ch) if ch.eq_ignore_ascii_case("r") => {
+                                state.queue_reset()
+                            }
+                            Key::Character(ch) if ch.eq_ignore_ascii_case("q") => {
+                                should_shutdown = true
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
             }
-            _ => {}
+        }
+
+        if should_shutdown {
+            self.shutdown(event_loop);
         }
     }
 
@@ -114,6 +130,13 @@ impl ApplicationHandler for DustApp {
         if let Some(state) = &self.state {
             state.window.request_redraw();
         }
+    }
+}
+
+impl DustApp {
+    fn shutdown(&mut self, event_loop: &ActiveEventLoop) {
+        self.state = None;
+        event_loop.exit();
     }
 }
 
@@ -524,16 +547,28 @@ impl State {
         Ok(())
     }
 
-    fn handle_surface_error(&mut self, error: SurfaceError, event_loop: &ActiveEventLoop) {
+    fn handle_surface_error(&mut self, error: SurfaceError) -> bool {
         match error {
-            SurfaceError::Lost => self.resize(self.size),
+            SurfaceError::Lost => {
+                self.resize(self.size);
+                false
+            }
+            SurfaceError::Outdated => {
+                self.resize(self.size);
+                false
+            }
+            SurfaceError::Timeout => {
+                warn!("surface timeout");
+                false
+            }
+            SurfaceError::Other => {
+                warn!("surface error: other");
+                false
+            }
             SurfaceError::OutOfMemory => {
                 error!("GPU ran out of memory");
-                event_loop.exit();
+                true
             }
-            SurfaceError::Outdated => self.resize(self.size),
-            SurfaceError::Timeout => warn!("surface timeout"),
-            SurfaceError::Other => warn!("surface error: other"),
         }
     }
 

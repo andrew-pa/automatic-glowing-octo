@@ -111,7 +111,7 @@ impl SimSettings {
 impl Default for SimSettings {
     fn default() -> Self {
         Self {
-            particle_count: 524_288,
+            particle_count: 1_000_000, //524_288,
             workgroup_size: 256,
             dt: 0.004,
             flow: 0.9,
@@ -121,7 +121,7 @@ impl Default for SimSettings {
             drive: 0.18,
             attractor: [-1.4, 1.6, 1.0, 0.7],
             point_size: 2.2,
-            exposure: 1.8,
+            exposure: 1.0,
             time_scale: 1.0,
         }
     }
