@@ -2,6 +2,7 @@ struct SimUniform {
     integrator : vec4<f32>,
     attractor : vec4<f32>,
     misc : vec4<f32>,
+    gravity : array<vec4<f32>, 4>,
     counters : vec4<u32>,
 };
 
@@ -14,6 +15,7 @@ struct Particle {
 @group(0) @binding(1) var<storage, read_write> particles : array<Particle>;
 
 const PI2 : f32 = 6.28318530718;
+const WELL_COUNT : u32 = 4u;
 
 fn hash32(x_in : u32) -> u32 {
     var x = x_in;
@@ -74,6 +76,21 @@ fn strange_field(pos : vec3<f32>) -> vec3<f32> {
     return mix(clifford, thomas, vec3<f32>(0.5));
 }
 
+fn gravity_field(pos : vec3<f32>) -> vec3<f32> {
+    var pull = vec3<f32>(0.0);
+    for (var i = 0u; i < WELL_COUNT; i = i + 1u) {
+        let well = params.gravity[i];
+        if (abs(well.w) < 1e-5) {
+            continue;
+        }
+        let offset = well.xyz - pos;
+        let dist_sqr = max(dot(offset, offset), 1e-3);
+        let dir = offset * inverseSqrt(dist_sqr);
+        pull += dir * (well.w / dist_sqr);
+    }
+    return pull;
+}
+
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) id : vec3<u32>) {
     let index = id.x;
@@ -95,7 +112,8 @@ fn main(@builtin(global_invocation_id) id : vec3<u32>) {
     var vel = particle.velocity.xyz;
 
     if (dt > 0.0) {
-        let accel = drive * strange_field(pos);
+        var accel = drive * strange_field(pos);
+        accel += gravity_field(pos);
         vel = vel + dt * (accel - damping * vel);
         pos = pos + dt * vel;
         let jitter = (hash33(index * 3u + params.counters.x) - vec3<f32>(0.5)) * params.misc.x;

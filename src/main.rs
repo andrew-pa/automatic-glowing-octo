@@ -549,7 +549,7 @@ impl State {
     }
 
     fn build_ui(&mut self, ctx: &Context) {
-        use egui::{CollapsingHeader, Slider, pos2};
+        use egui::{CollapsingHeader, DragValue, Grid, Slider, pos2};
 
         let fps = 1.0 / self.frame_time_smooth.max(1e-6);
         let dispatch_preview = self.settings.dispatch_count();
@@ -608,6 +608,41 @@ impl State {
                 ui.add(
                     Slider::new(&mut self.settings.trail_intensity, 0.1..=5.0).text("trail gain"),
                 );
+                ui.separator();
+                CollapsingHeader::new("Gravity wells")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        for (idx, well) in self.settings.gravity_wells.iter_mut().enumerate() {
+                            ui.group(|ui| {
+                                ui.label(format!("Well {}", idx + 1));
+                                Grid::new(format!("well_grid_{idx}"))
+                                    .num_columns(2)
+                                    .striped(true)
+                                    .show(ui, |ui| {
+                                        ui.label("Position");
+                                        ui.horizontal(|ui| {
+                                            for (value, label) in
+                                                well.position.iter_mut().zip(["x", "y", "z"])
+                                            {
+                                                ui.add(
+                                                    DragValue::new(value)
+                                                        .speed(0.1)
+                                                        .range(-50.0..=50.0)
+                                                        .prefix(format!("{label}: ")),
+                                                );
+                                            }
+                                        });
+                                        ui.end_row();
+                                        ui.label("Strength");
+                                        ui.add(
+                                            Slider::new(&mut well.strength, 0.0..=50.0)
+                                                .text("strength"),
+                                        );
+                                        ui.end_row();
+                                    });
+                            });
+                        }
+                    });
             });
 
         egui::TopBottomPanel::bottom("status_panel")

@@ -3,6 +3,8 @@ use wgpu::BufferAddress;
 
 use bytemuck::{Pod, Zeroable};
 
+pub const GRAVITY_WELL_COUNT: usize = 4;
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct GpuParticle {
@@ -20,7 +22,8 @@ pub struct SimUniform {
     pub integrator: [f32; 4], // dt, flow, damping, color_mix
     pub attractor: [f32; 4],  // a, b, c, d
     pub misc: [f32; 4],       // jitter, drive, unused, unused
-    pub counters: [u32; 4],   // frame, reset, particle_count, unused
+    pub gravity: [[f32; 4]; GRAVITY_WELL_COUNT],
+    pub counters: [u32; 4], // frame, reset, particle_count, unused
 }
 
 impl SimUniform {
@@ -34,6 +37,7 @@ impl SimUniform {
             ],
             attractor: settings.attractor,
             misc: [settings.jitter, settings.drive, 0.0, 0.0],
+            gravity: settings.gravity_wells.map(|well| well.as_vec4()),
             counters: [0, 1, settings.particle_count, 0],
         }
     }
@@ -42,6 +46,7 @@ impl SimUniform {
         self.integrator = [dt, settings.flow, settings.damping, settings.color_mix];
         self.attractor = settings.attractor;
         self.misc = [settings.jitter, settings.drive, 0.0, 0.0];
+        self.gravity = settings.gravity_wells.map(|well| well.as_vec4());
         self.counters[0] = frame as u32;
         self.counters[1] = if reset { 1 } else { 0 };
         self.counters[2] = settings.particle_count;
@@ -99,6 +104,7 @@ pub struct SimSettings {
     pub exposure: f32,
     pub trail_decay: f32,
     pub trail_intensity: f32,
+    pub gravity_wells: [GravityWell; GRAVITY_WELL_COUNT],
     pub time_scale: f32,
 }
 
@@ -128,7 +134,40 @@ impl Default for SimSettings {
             exposure: 0.4,
             trail_decay: 0.93,
             trail_intensity: 1.4,
+            gravity_wells: [
+                GravityWell::new([6.0, 0.0, 0.0], 12.0),
+                GravityWell::new([-6.0, 0.0, 0.0], 12.0),
+                GravityWell::new([0.0, 6.0, 0.0], 8.0),
+                GravityWell::new([0.0, -6.0, 0.0], 8.0),
+            ],
             time_scale: 1.0,
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct GravityWell {
+    pub position: [f32; 3],
+    pub strength: f32,
+}
+
+impl GravityWell {
+    pub const fn new(position: [f32; 3], strength: f32) -> Self {
+        Self { position, strength }
+    }
+
+    pub fn as_vec4(self) -> [f32; 4] {
+        [
+            self.position[0],
+            self.position[1],
+            self.position[2],
+            self.strength,
+        ]
+    }
+}
+
+impl Default for GravityWell {
+    fn default() -> Self {
+        Self::new([0.0; 3], 0.0)
     }
 }
