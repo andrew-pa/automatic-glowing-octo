@@ -1,0 +1,14 @@
+[package]
+name = "dust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+wgpu = "27.0.1"
+winit = "0.30.12"
+glam = "0.30.9"
+bytemuck = { version = "1.24.0", features = ["derive"] }
+anyhow = "1.0.100"
+pollster = "0.4.0"
+env_logger = "0.11.8"
+log = "0.4.28"
