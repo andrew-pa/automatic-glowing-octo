@@ -97,6 +97,8 @@ pub struct SimSettings {
     pub attractor: [f32; 4],
     pub point_size: f32,
     pub exposure: f32,
+    pub trail_decay: f32,
+    pub trail_intensity: f32,
     pub time_scale: f32,
 }
 
@@ -124,6 +126,8 @@ impl Default for SimSettings {
             attractor: [-1.4, 1.6, 1.0, 0.7],
             point_size: 1.2,
             exposure: 0.4,
+            trail_decay: 0.93,
+            trail_intensity: 1.4,
             time_scale: 1.0,
         }
     }

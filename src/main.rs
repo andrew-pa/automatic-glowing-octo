@@ -1,4 +1,5 @@
 mod camera;
+mod fx;
 mod sim;
 mod ui;
 
@@ -8,6 +9,7 @@ use std::time::Instant;
 use anyhow::{Context as AnyhowContext, Result};
 use camera::{OrbitCamera, OrbitController};
 use egui::Context;
+use fx::{TRAIL_FORMAT, TrailComposer};
 use glam::{Vec2, Vec3};
 use log::{error, warn};
 use sim::{CameraUniform, GpuParticle, SimSettings, SimUniform};
@@ -167,6 +169,7 @@ struct State {
     particle_buffer: wgpu::Buffer,
     quad_vertex_buffer: wgpu::Buffer,
     render_pipeline: wgpu::RenderPipeline,
+    trail: TrailComposer,
     camera_uniform: CameraUniform,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
@@ -397,7 +400,7 @@ impl State {
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format,
+                    format: TRAIL_FORMAT,
                     blend: Some(wgpu::BlendState {
                         color: wgpu::BlendComponent {
                             src_factor: wgpu::BlendFactor::SrcAlpha,
@@ -425,6 +428,8 @@ impl State {
             cache: None,
         });
 
+        let trail = TrailComposer::new(&device, &config);
+        trail.clear(&device, &queue);
         let camera = OrbitCamera::new(Vec3::ZERO, 18.0, config.width as f32 / config.height as f32);
         let camera_controller = OrbitController::default();
         let ui_layer = UiLayer::new(window.as_ref(), &device, format);
@@ -445,6 +450,7 @@ impl State {
             particle_buffer,
             quad_vertex_buffer,
             render_pipeline,
+            trail,
             camera_uniform,
             camera_buffer,
             camera_bind_group,
@@ -458,9 +464,9 @@ impl State {
             frame_time_smooth: 1.0 / 60.0,
             frame_id: 0,
             clear_color: wgpu::Color {
-                r: 0.02,
-                g: 0.02,
-                b: 0.035,
+                r: 0.01,
+                g: 0.01,
+                b: 0.017,
                 a: 1.0,
             },
         })
@@ -480,6 +486,12 @@ impl State {
         self.surface.configure(&self.device, &self.config);
         self.camera
             .set_aspect(self.config.width as f32 / self.config.height as f32);
+        self.trail.resize(
+            &self.device,
+            self.config.width.max(1),
+            self.config.height.max(1),
+        );
+        self.trail.clear(&self.device, &self.queue);
     }
 
     fn update(&mut self) {
@@ -518,6 +530,12 @@ impl State {
             &self.camera_buffer,
             0,
             bytemuck::bytes_of(&self.camera_uniform),
+        );
+        self.trail.update_uniforms(
+            &self.queue,
+            self.settings.trail_decay,
+            self.settings.trail_intensity,
+            self.settings.exposure,
         );
     }
 
@@ -577,7 +595,19 @@ impl State {
                 ui.separator();
                 ui.label("Rendering");
                 ui.add(Slider::new(&mut self.settings.point_size, 0.1..=12.0).text("point size"));
-                ui.add(Slider::new(&mut self.settings.exposure, 0.0..=3.0).step_by(0.00001).text("exposure"));
+                ui.add(
+                    Slider::new(&mut self.settings.exposure, 0.0..=3.0)
+                        .step_by(0.00001)
+                        .text("exposure"),
+                );
+                ui.add(
+                    Slider::new(&mut self.settings.trail_decay, 0.5..=0.999)
+                        .logarithmic(true)
+                        .text("trail decay"),
+                );
+                ui.add(
+                    Slider::new(&mut self.settings.trail_intensity, 0.1..=5.0).text("trail gain"),
+                );
             });
 
         egui::TopBottomPanel::bottom("status_panel")
@@ -589,7 +619,10 @@ impl State {
                         self.settings.particle_count, dispatch_preview
                     ));
                     ui.separator();
-                    ui.label(format!("#{} FPS: {fps:4.1} dt: {:2.8}", self.frame_id, self.frame_time_smooth));
+                    ui.label(format!(
+                        "#{} FPS: {fps:4.1} dt: {:2.8}",
+                        self.frame_id, self.frame_time_smooth
+                    ));
                     ui.separator();
                     ui.label("Hold right mouse to orbit, middle to pan, scroll to zoom");
                 });
@@ -618,15 +651,20 @@ impl State {
             compute_pass.dispatch_workgroups(self.dispatch_count, 1, 1);
         }
 
+        let (trail_read_idx, trail_write_idx) = self.trail.prepare_indices();
+        self.trail
+            .run_decay(&mut encoder, trail_read_idx, trail_write_idx);
+
         {
+            let trail_view = self.trail.particle_target(trail_write_idx);
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Attractor Render"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: trail_view,
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(self.clear_color),
+                        load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -640,6 +678,10 @@ impl State {
             render_pass.set_vertex_buffer(1, self.quad_vertex_buffer.slice(..));
             render_pass.draw(0..4, 0..self.settings.particle_count);
         }
+
+        self.trail
+            .present(&mut encoder, trail_write_idx, &view, self.clear_color);
+        self.trail.advance(trail_write_idx);
 
         if let Some(output) = self.ui_output.take() {
             self.ui_layer
