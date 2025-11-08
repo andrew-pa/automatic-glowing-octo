@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use camera::{OrbitCamera, OrbitController};
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 use log::{error, warn};
 use sim::{CameraUniform, GpuParticle, SimSettings, SimUniform};
 use wgpu::SurfaceError;
@@ -20,6 +20,7 @@ use winit::window::{Window, WindowId};
 
 const COMPUTE_SHADER: &str = include_str!("../shaders/attractor.comp.wgsl");
 const RENDER_SHADER: &str = include_str!("../shaders/attractor.render.wgsl");
+const QUAD_VERTICES: [[f32; 2]; 4] = [[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]];
 
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -130,6 +131,7 @@ struct State {
     compute_pipeline: wgpu::ComputePipeline,
     dispatch_count: u32,
     particle_buffer: wgpu::Buffer,
+    quad_vertex_buffer: wgpu::Buffer,
     render_pipeline: wgpu::RenderPipeline,
     camera_uniform: CameraUniform,
     camera_buffer: wgpu::Buffer,
@@ -227,6 +229,12 @@ impl State {
                 | wgpu::BufferUsages::VERTEX
                 | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
+        });
+
+        let quad_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Quad Vertices"),
+            contents: bytemuck::cast_slice(&QUAD_VERTICES),
+            usage: wgpu::BufferUsages::VERTEX,
         });
 
         let sim_bind_group_layout =
@@ -334,11 +342,18 @@ impl State {
                 module: &render_shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: GpuParticle::STRIDE,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4],
-                }],
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: GpuParticle::STRIDE,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4],
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![2 => Float32x2],
+                    },
+                ],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &render_shader,
@@ -362,7 +377,7 @@ impl State {
                 })],
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::PointList,
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
                 cull_mode: None,
                 front_face: wgpu::FrontFace::Ccw,
                 ..Default::default()
@@ -390,6 +405,7 @@ impl State {
             compute_pipeline,
             dispatch_count,
             particle_buffer,
+            quad_vertex_buffer,
             render_pipeline,
             camera_uniform,
             camera_buffer,
@@ -449,6 +465,7 @@ impl State {
             self.camera.eye(),
             self.settings.point_size,
             self.settings.exposure,
+            Vec2::new(self.size.width as f32, self.size.height as f32),
         );
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -497,7 +514,8 @@ impl State {
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.particle_buffer.slice(..));
-            render_pass.draw(0..self.settings.particle_count, 0..1);
+            render_pass.set_vertex_buffer(1, self.quad_vertex_buffer.slice(..));
+            render_pass.draw(0..4, 0..self.settings.particle_count);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

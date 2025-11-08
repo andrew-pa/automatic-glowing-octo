@@ -1,13 +1,13 @@
 struct SimUniform {
-    integrator : vec4<f32>;
-    attractor : vec4<f32>;
-    misc : vec4<f32>;
-    counters : vec4<u32>;
+    integrator : vec4<f32>,
+    attractor : vec4<f32>,
+    misc : vec4<f32>,
+    counters : vec4<u32>,
 };
 
 struct Particle {
-    position : vec4<f32>;
-    velocity : vec4<f32>;
+    position : vec4<f32>,
+    velocity : vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> params : SimUniform;

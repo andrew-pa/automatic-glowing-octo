@@ -1,21 +1,25 @@
 struct CameraUniform {
-    view_proj : mat4x4<f32>;
-    eye : vec4<f32>;
-    tonemapping : vec4<f32>;
+    view_proj : mat4x4<f32>,
+    eye : vec4<f32>,
+    params : vec4<f32>, // point_size, exposure, viewport_width, viewport_height
 };
 
 @group(0) @binding(0) var<uniform> camera : CameraUniform;
 
-struct VertexInput {
-    @location(0) position : vec4<f32>;
-    @location(1) velocity : vec4<f32>;
+struct InstanceInput {
+    @location(0) position : vec4<f32>,
+    @location(1) velocity : vec4<f32>,
+};
+
+struct CornerInput {
+    @location(2) corner : vec2<f32>,
 };
 
 struct VertexOutput {
-    @builtin(position) clip_position : vec4<f32>;
-    @builtin(point_size) point_size : f32;
-    @location(0) color : vec3<f32>;
-    @location(1) sparkle : f32;
+    @builtin(position) clip_position : vec4<f32>,
+    @location(0) color : vec3<f32>,
+    @location(1) sparkle : f32,
+    @location(2) corner : vec2<f32>,
 };
 
 fn palette(speed : f32, dir : vec3<f32>) -> vec3<f32> {
@@ -26,22 +30,34 @@ fn palette(speed : f32, dir : vec3<f32>) -> vec3<f32> {
 }
 
 @vertex
-fn vs_main(in : VertexInput) -> VertexOutput {
+fn vs_main(instance : InstanceInput, quad : CornerInput) -> VertexOutput {
     var out : VertexOutput;
-    let world = vec4<f32>(in.position.xyz, 1.0);
-    out.clip_position = camera.view_proj * world;
-    let vel_dir = normalize(in.velocity.xyz + vec3<f32>(1e-4));
-    let speed = max(in.position.w, 1e-4);
+    let world = vec4<f32>(instance.position.xyz, 1.0);
+    let clip = camera.view_proj * world;
+
+    let viewport = max(vec2<f32>(camera.params.z, camera.params.w), vec2<f32>(1.0));
+    let pixel_extent = quad.corner * camera.params.x;
+    let ndc_delta = vec2<f32>(
+        pixel_extent.x * (2.0 / viewport.x),
+        -pixel_extent.y * (2.0 / viewport.y)
+    );
+    let clip_offset = vec4<f32>(ndc_delta * clip.w, 0.0, 0.0);
+    out.clip_position = clip + clip_offset;
+
+    let vel_dir = normalize(instance.velocity.xyz + vec3<f32>(1e-4));
+    let speed = max(instance.position.w, 1e-4);
     out.color = palette(speed, vel_dir);
     out.sparkle = speed;
-    out.point_size = camera.tonemapping.x;
+    out.corner = quad.corner * 2.0;
     return out;
 }
 
 @fragment
 fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
-    let exposure = camera.tonemapping.y;
+    let exposure = camera.params.y;
     let glow = pow(clamp(in.sparkle * exposure, 0.0, 8.0), 0.65);
-    let color = in.color * glow;
-    return vec4<f32>(color, glow);
+    let mask = clamp(1.0 - length(in.corner), 0.0, 1.0);
+    let alpha = glow * mask;
+    let color = in.color * alpha;
+    return vec4<f32>(color, alpha);
 }

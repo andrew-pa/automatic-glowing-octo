@@ -1,4 +1,4 @@
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec2, Vec3};
 use wgpu::BufferAddress;
 
 use bytemuck::{Pod, Zeroable};
@@ -51,7 +51,7 @@ impl SimUniform {
 pub struct CameraUniform {
     pub view_proj: [[f32; 4]; 4],
     pub eye: [f32; 4],
-    pub tonemapping: [f32; 4], // point_size, exposure, pad, pad
+    pub params: [f32; 4], // point_size, exposure, viewport_width, viewport_height
 }
 
 impl CameraUniform {
@@ -59,14 +59,26 @@ impl CameraUniform {
         Self {
             view_proj: Mat4::IDENTITY.to_cols_array_2d(),
             eye: [0.0; 4],
-            tonemapping: [2.0, 1.0, 0.0, 0.0],
+            params: [2.0, 1.0, 1.0, 1.0],
         }
     }
 
-    pub fn update(&mut self, view_proj: Mat4, eye: Vec3, point_size: f32, exposure: f32) {
+    pub fn update(
+        &mut self,
+        view_proj: Mat4,
+        eye: Vec3,
+        point_size: f32,
+        exposure: f32,
+        viewport: Vec2,
+    ) {
         self.view_proj = view_proj.to_cols_array_2d();
         self.eye = [eye.x, eye.y, eye.z, 1.0];
-        self.tonemapping = [point_size, exposure, 0.0, 0.0];
+        self.params = [
+            point_size,
+            exposure,
+            viewport.x.max(1.0),
+            viewport.y.max(1.0),
+        ];
     }
 }
 
