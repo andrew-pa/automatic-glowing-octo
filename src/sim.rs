@@ -121,7 +121,7 @@ impl Default for SimSettings {
             drive: 0.18,
             attractor: [-1.4, 1.6, 1.0, 0.7],
             point_size: 2.2,
-            exposure: 1.0,
+            exposure: 0.5,
             time_scale: 1.0,
         }
     }

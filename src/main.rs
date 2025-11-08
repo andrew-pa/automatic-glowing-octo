@@ -499,6 +499,7 @@ impl State {
 
     fn render(&mut self) -> Result<(), SurfaceError> {
         let frame = self.surface.get_current_texture()?;
+        let suboptimal = frame.suboptimal;
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -543,6 +544,9 @@ impl State {
 
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
+        if suboptimal {
+            self.resize(self.window.inner_size());
+        }
         self.frame_id = self.frame_id.wrapping_add(1);
         Ok(())
     }
