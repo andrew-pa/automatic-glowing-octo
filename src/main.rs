@@ -1,14 +1,17 @@
 mod camera;
 mod sim;
+mod ui;
 
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{Context as AnyhowContext, Result};
 use camera::{OrbitCamera, OrbitController};
+use egui::Context;
 use glam::{Vec2, Vec3};
 use log::{error, warn};
 use sim::{CameraUniform, GpuParticle, SimSettings, SimUniform};
+use ui::{UiFrameOutput, UiLayer};
 use wgpu::SurfaceError;
 use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
@@ -71,21 +74,25 @@ impl ApplicationHandler for DustApp {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(state_ref) = self.state.as_ref() else {
-            return;
-        };
-        if window_id != state_ref.window_id() {
-            return;
-        }
-
         let mut should_shutdown = false;
 
         {
-            let state = self.state.as_mut().expect("state still present");
+            let Some(state) = self.state.as_mut() else {
+                return;
+            };
+            if window_id != state.window_id() {
+                return;
+            }
 
-            if state
-                .camera_controller
-                .process(&mut state.camera, &event, state.size)
+            let ui_response = state.ui_layer.handle_event(state.window.as_ref(), &event);
+            if ui_response.repaint {
+                state.window.request_redraw();
+            }
+
+            if !ui_response.consumed
+                && state
+                    .camera_controller
+                    .process(&mut state.camera, &event, state.size)
             {
                 return;
             }
@@ -102,19 +109,23 @@ impl ApplicationHandler for DustApp {
                         }
                     }
                 }
-                WindowEvent::KeyboardInput { event, .. } => {
-                    if event.state == ElementState::Pressed && !event.repeat {
-                        match &event.logical_key {
-                            Key::Named(NamedKey::Escape) => should_shutdown = true,
-                            Key::Named(NamedKey::Space) => state.toggle_pause(),
-                            Key::Character(ch) if ch.eq_ignore_ascii_case("r") => {
-                                state.queue_reset()
-                            }
-                            Key::Character(ch) if ch.eq_ignore_ascii_case("q") => {
-                                should_shutdown = true
-                            }
-                            _ => {}
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed && !event.repeat =>
+                {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => should_shutdown = true,
+                        Key::Named(NamedKey::Space) if !ui_response.consumed => {
+                            state.toggle_pause()
                         }
+                        Key::Character(ch)
+                            if !ui_response.consumed && ch.eq_ignore_ascii_case("r") =>
+                        {
+                            state.queue_reset()
+                        }
+                        Key::Character(ch) if ch.eq_ignore_ascii_case("q") => {
+                            should_shutdown = true
+                        }
+                        _ => {}
                     }
                 }
                 _ => {}
@@ -161,9 +172,12 @@ struct State {
     camera_bind_group: wgpu::BindGroup,
     camera: OrbitCamera,
     camera_controller: OrbitController,
+    ui_layer: UiLayer,
+    ui_output: Option<UiFrameOutput>,
     pending_reset: bool,
     paused: bool,
     last_frame: Instant,
+    frame_time_smooth: f32,
     frame_id: u64,
     clear_color: wgpu::Color,
 }
@@ -413,6 +427,7 @@ impl State {
 
         let camera = OrbitCamera::new(Vec3::ZERO, 18.0, config.width as f32 / config.height as f32);
         let camera_controller = OrbitController::default();
+        let ui_layer = UiLayer::new(window.as_ref(), &device, format);
 
         Ok(Self {
             window,
@@ -435,9 +450,12 @@ impl State {
             camera_bind_group,
             camera,
             camera_controller,
+            ui_layer,
+            ui_output: None,
             pending_reset: true,
             paused: false,
             last_frame: Instant::now(),
+            frame_time_smooth: 1.0 / 60.0,
             frame_id: 0,
             clear_color: wgpu::Color {
                 r: 0.02,
@@ -466,19 +484,25 @@ impl State {
 
     fn update(&mut self) {
         let now = Instant::now();
-        let frame_dt = (now - self.last_frame).as_secs_f32();
+        let frame_dt = (now - self.last_frame).as_secs_f32().max(1e-6);
         self.last_frame = now;
+        self.frame_time_smooth = self.frame_time_smooth * 0.9 + frame_dt * 0.1;
+
+        self.run_ui();
+
         let sim_dt = if self.paused {
             0.0
         } else {
-            (frame_dt * self.settings.time_scale).clamp(0.0005, self.settings.dt)
+            (frame_dt * self.settings.time_scale).clamp(0.0001, self.settings.dt)
         };
+
+        self.dispatch_count = self.settings.dispatch_count();
 
         self.sim_uniform.update(
             sim_dt,
             self.frame_id,
             std::mem::take(&mut self.pending_reset),
-            self.settings.particle_count,
+            &self.settings,
         );
         self.queue
             .write_buffer(&self.sim_buffer, 0, bytemuck::bytes_of(&self.sim_uniform));
@@ -495,6 +519,81 @@ impl State {
             0,
             bytemuck::bytes_of(&self.camera_uniform),
         );
+    }
+
+    fn run_ui(&mut self) {
+        let window = self.window.clone();
+        let window_ref = window.as_ref();
+        let raw_input = self.ui_layer.take_input(window_ref, self.size);
+        let egui_ctx = self.ui_layer.context().clone();
+        let full_output = egui_ctx.run(raw_input, |ctx| self.build_ui(ctx));
+        self.ui_output = Some(self.ui_layer.process_output(window_ref, full_output));
+    }
+
+    fn build_ui(&mut self, ctx: &Context) {
+        use egui::{CollapsingHeader, Slider, pos2};
+
+        let fps = 1.0 / self.frame_time_smooth.max(1e-6);
+        let dispatch_preview = self.settings.dispatch_count();
+
+        egui::Window::new("Simulation Controls")
+            .default_width(320.0)
+            .default_pos(pos2(16.0, 16.0))
+            .show(ctx, |ui| {
+                ui.label("Tweak the integrator and tone map settings in real time.");
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(if self.paused { "Resume" } else { "Pause" })
+                        .clicked()
+                    {
+                        self.toggle_pause();
+                    }
+                    if ui.button("Reset").clicked() {
+                        self.queue_reset();
+                    }
+                });
+                ui.separator();
+                ui.label("Playback");
+                ui.add(Slider::new(&mut self.settings.time_scale, 0.1..=4.0).text("time scale"));
+                ui.add(Slider::new(&mut self.settings.dt, 0.0005..=0.02).text("target dt"));
+                ui.separator();
+                ui.label("Flow Field");
+                ui.add(Slider::new(&mut self.settings.flow, 0.001..=20.0).text("flow"));
+                ui.add(Slider::new(&mut self.settings.damping, 0.0..=0.99).text("damping"));
+                ui.add(Slider::new(&mut self.settings.color_mix, 0.01..=1.0).text("color mix"));
+                ui.add(Slider::new(&mut self.settings.jitter, 0.0..=0.01).text("jitter"));
+                ui.add(Slider::new(&mut self.settings.drive, 0.0..=0.5).text("drive"));
+                CollapsingHeader::new("Attractor coefficients")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        let labels = ["a", "b", "c", "d"];
+                        for (idx, label) in labels.iter().enumerate() {
+                            ui.add(
+                                Slider::new(&mut self.settings.attractor[idx], -30.0..=30.0)
+                                    .text(*label),
+                            );
+                        }
+                    });
+                ui.separator();
+                ui.label("Rendering");
+                ui.add(Slider::new(&mut self.settings.point_size, 0.1..=12.0).text("point size"));
+                ui.add(Slider::new(&mut self.settings.exposure, 0.0..=3.0).step_by(0.00001).text("exposure"));
+            });
+
+        egui::TopBottomPanel::bottom("status_panel")
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "Particles: {} · Dispatch: {}",
+                        self.settings.particle_count, dispatch_preview
+                    ));
+                    ui.separator();
+                    ui.label(format!("#{} FPS: {fps:4.1} dt: {:2.8}", self.frame_id, self.frame_time_smooth));
+                    ui.separator();
+                    ui.label("Hold right mouse to orbit, middle to pan, scroll to zoom");
+                });
+            });
     }
 
     fn render(&mut self) -> Result<(), SurfaceError> {
@@ -540,6 +639,11 @@ impl State {
             render_pass.set_vertex_buffer(0, self.particle_buffer.slice(..));
             render_pass.set_vertex_buffer(1, self.quad_vertex_buffer.slice(..));
             render_pass.draw(0..4, 0..self.settings.particle_count);
+        }
+
+        if let Some(output) = self.ui_output.take() {
+            self.ui_layer
+                .paint(&self.device, &self.queue, &mut encoder, &view, output);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

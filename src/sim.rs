@@ -38,11 +38,13 @@ impl SimUniform {
         }
     }
 
-    pub fn update(&mut self, dt: f32, frame: u64, reset: bool, particle_count: u32) {
-        self.integrator[0] = dt;
+    pub fn update(&mut self, dt: f32, frame: u64, reset: bool, settings: &SimSettings) {
+        self.integrator = [dt, settings.flow, settings.damping, settings.color_mix];
+        self.attractor = settings.attractor;
+        self.misc = [settings.jitter, settings.drive, 0.0, 0.0];
         self.counters[0] = frame as u32;
         self.counters[1] = if reset { 1 } else { 0 };
-        self.counters[2] = particle_count;
+        self.counters[2] = settings.particle_count;
     }
 }
 
@@ -111,17 +113,17 @@ impl SimSettings {
 impl Default for SimSettings {
     fn default() -> Self {
         Self {
-            particle_count: 1_000_000, //524_288,
+            particle_count: 5_000_000, //524_288,
             workgroup_size: 256,
             dt: 0.004,
-            flow: 0.9,
-            damping: 0.08,
-            color_mix: 0.1,
+            flow: 0.2,
+            damping: 0.06,
+            color_mix: 0.6,
             jitter: 0.0015,
             drive: 0.18,
             attractor: [-1.4, 1.6, 1.0, 0.7],
-            point_size: 2.2,
-            exposure: 0.5,
+            point_size: 1.2,
+            exposure: 0.4,
             time_scale: 1.0,
         }
     }
