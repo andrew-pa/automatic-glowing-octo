@@ -1,6 +1,7 @@
 mod audio;
 mod camera;
 mod fx;
+mod presets;
 mod sim;
 mod ui;
 mod ui_panels;
@@ -15,6 +16,7 @@ use egui::{CollapsingHeader, Context};
 use fx::{TRAIL_FORMAT, TrailComposer};
 use glam::{Vec2, Vec3};
 use log::{error, warn};
+use presets::{SettingsPreset, load_presets, save_presets};
 use sim::{CameraUniform, GRAVITY_WELL_COUNT, GpuParticle, GravityWell, SimSettings, SimUniform};
 use ui::{UiFrameOutput, UiLayer};
 use ui_panels::{audio_window, gravity_window};
@@ -186,6 +188,10 @@ struct State {
     modulated_wells: [GravityWell; GRAVITY_WELL_COUNT],
     modulated_attractor: [f32; 4],
     audio_targets: Vec<AudioTarget>,
+    presets: Vec<SettingsPreset>,
+    selected_preset: Option<String>,
+    preset_name_input: String,
+    preset_message: Option<(String, Instant)>,
     last_target_refresh: Instant,
     pending_reset: bool,
     paused: bool,
@@ -452,6 +458,16 @@ impl State {
         let camera_controller = OrbitController::default();
         let ui_layer = UiLayer::new(window.as_ref(), &device, format);
 
+        let mut preset_message = None;
+        let presets = match load_presets() {
+            Ok(list) => list,
+            Err(err) => {
+                warn!("failed to load presets: {err:?}");
+                preset_message = Some((format!("Failed to load presets: {err}"), Instant::now()));
+                Vec::new()
+            }
+        };
+
         Ok(Self {
             window,
             surface,
@@ -479,7 +495,12 @@ impl State {
             audio_engine,
             audio_bands,
             modulated_wells,
+            modulated_attractor,
             audio_targets,
+            presets,
+            selected_preset: None,
+            preset_name_input: String::new(),
+            preset_message,
             last_target_refresh: Instant::now(),
             pending_reset: true,
             paused: false,
@@ -492,7 +513,6 @@ impl State {
                 b: 0.017,
                 a: 1.0,
             },
-            modulated_attractor,
         })
     }
 
@@ -606,6 +626,8 @@ impl State {
                     }
                 });
                 ui.separator();
+                self.preset_controls(ui);
+                ui.separator();
                 ui.label("Playback");
                 ui.add(Slider::new(&mut self.settings.time_scale, 0.1..=4.0).text("time scale"));
                 ui.add(Slider::new(&mut self.settings.dt, 0.0005..=0.02).text("target dt"));
@@ -665,6 +687,150 @@ impl State {
                     ui.label("Hold right mouse to orbit, middle to pan, scroll to zoom");
                 });
             });
+    }
+
+    fn preset_controls(&mut self, ui: &mut egui::Ui) {
+        use egui::ComboBox;
+
+        if self
+            .preset_message
+            .as_ref()
+            .map(|(_, t)| t.elapsed() > Duration::from_secs(4))
+            .unwrap_or(false)
+        {
+            self.preset_message = None;
+        }
+
+        ui.label("Presets");
+        ui.horizontal(|ui| {
+            ui.label("Name");
+            ui.text_edit_singleline(&mut self.preset_name_input);
+            if ui.button("Save / Overwrite").clicked() {
+                self.save_preset_from_input();
+            }
+        });
+        ui.horizontal(|ui| {
+            let selected_label = self
+                .selected_preset
+                .as_deref()
+                .unwrap_or("Select preset")
+                .to_string();
+            ComboBox::from_id_salt("preset_select")
+                .selected_text(selected_label)
+                .width(180.0)
+                .show_ui(ui, |ui| {
+                    if self.presets.is_empty() {
+                        ui.label("No presets saved yet");
+                    } else {
+                        for preset in &self.presets {
+                            let selected = self
+                                .selected_preset
+                                .as_deref()
+                                .map(|name| name == preset.name)
+                                .unwrap_or(false);
+                            if ui.selectable_label(selected, &preset.name).clicked() {
+                                self.selected_preset = Some(preset.name.clone());
+                                self.preset_name_input = preset.name.clone();
+                            }
+                        }
+                    }
+                });
+            if ui
+                .add_enabled(self.selected_preset.is_some(), egui::Button::new("Load"))
+                .clicked()
+            {
+                self.load_selected_preset();
+            }
+            if ui
+                .add_enabled(self.selected_preset.is_some(), egui::Button::new("Delete"))
+                .clicked()
+            {
+                self.delete_selected_preset();
+            }
+        });
+        if let Some((message, _)) = &self.preset_message {
+            ui.label(message);
+        }
+    }
+
+    fn save_preset_from_input(&mut self) {
+        let name = self.preset_name_input.trim();
+        if name.is_empty() {
+            self.show_preset_message("Enter a preset name.");
+            return;
+        }
+        let name_owned = name.to_string();
+        if let Some(idx) = self.presets.iter().position(|p| p.name == name) {
+            self.presets[idx].settings = self.settings.clone();
+        } else {
+            self.presets.push(SettingsPreset {
+                name: name_owned.clone(),
+                settings: self.settings.clone(),
+            });
+            self.sort_presets();
+        }
+        self.selected_preset = Some(name_owned.clone());
+        self.preset_name_input = name_owned.clone();
+        self.persist_presets(Some(format!("Preset \"{}\" saved", name_owned)));
+    }
+
+    fn load_selected_preset(&mut self) {
+        let Some(idx) = self.selected_preset_index() else {
+            self.show_preset_message("Select a preset to load.");
+            return;
+        };
+        let preset = self.presets[idx].clone();
+        self.apply_preset_settings(&preset);
+        self.show_preset_message(format!("Loaded \"{}\"", preset.name));
+    }
+
+    fn delete_selected_preset(&mut self) {
+        let Some(idx) = self.selected_preset_index() else {
+            self.show_preset_message("Select a preset to delete.");
+            return;
+        };
+        let name = self.presets[idx].name.clone();
+        self.presets.remove(idx);
+        self.selected_preset = None;
+        self.preset_name_input.clear();
+        self.persist_presets(Some(format!("Deleted \"{}\"", name)));
+    }
+
+    fn selected_preset_index(&self) -> Option<usize> {
+        let name = self.selected_preset.as_ref()?;
+        self.presets.iter().position(|p| &p.name == name)
+    }
+
+    fn persist_presets(&mut self, success_message: Option<String>) {
+        match save_presets(&self.presets) {
+            Ok(_) => {
+                if let Some(msg) = success_message {
+                    self.show_preset_message(msg);
+                }
+            }
+            Err(err) => {
+                error!("failed to persist presets: {err:?}");
+                self.show_preset_message(format!("Failed to save presets: {err}"));
+            }
+        }
+    }
+
+    fn show_preset_message<S: Into<String>>(&mut self, msg: S) {
+        self.preset_message = Some((msg.into(), Instant::now()));
+    }
+
+    fn apply_preset_settings(&mut self, preset: &SettingsPreset) {
+        self.settings = preset.settings.clone();
+        self.dispatch_count = self.settings.dispatch_count();
+        self.modulated_wells = self.settings.modulated_wells(self.audio_bands);
+        self.modulated_attractor = self.settings.modulated_attractor(self.audio_bands);
+        self.pending_reset = true;
+        self.audio_engine.refresh(&self.settings.audio);
+    }
+
+    fn sort_presets(&mut self) {
+        self.presets
+            .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     }
 
     fn render(&mut self) -> Result<(), SurfaceError> {

@@ -2,6 +2,7 @@ use glam::{Mat4, Vec2, Vec3};
 use wgpu::BufferAddress;
 
 use bytemuck::{Pod, Zeroable};
+use serde::{Deserialize, Serialize};
 
 pub const GRAVITY_WELL_COUNT: usize = 4;
 pub const DEFAULT_AUDIO_BAND_RANGES: [(f32, f32); GRAVITY_WELL_COUNT] = [
@@ -107,7 +108,8 @@ impl CameraUniform {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SimSettings {
     pub particle_count: u32,
     pub workgroup_size: u32,
@@ -165,7 +167,7 @@ impl Default for SimSettings {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct GravityWell {
     pub position: [f32; 3],
     pub strength: f32,
@@ -207,7 +209,8 @@ impl Default for GravityWell {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AudioSettings {
     pub enabled: bool,
     pub capture_sink: bool,
